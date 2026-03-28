@@ -27,12 +27,20 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Build Docker image locally
+        run: |
+          # Build our own image from scripts/Dockerfile — no dependency on
+          # ghcr.io/termux/package-builder which could be removed by upstream
+          docker build -t novaterm/package-builder:latest scripts/
+
       - name: Generate bootstrap
         run: |
           EXTRA="${{ github.event.inputs.extra_packages }}"
           EXTRA_FLAG=""
           [ -n "$EXTRA" ] && EXTRA_FLAG="--add $EXTRA"
 
+          # Use TERMUX_DOCKER_IMAGE_NAME to point to our local image
+          export TERMUX_DOCKER_IMAGE_NAME="novaterm/package-builder:latest"
           ./scripts/run-docker.sh ./scripts/generate-bootstraps.sh \
             --architectures aarch64 \
             $EXTRA_FLAG
