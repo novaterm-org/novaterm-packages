@@ -1,0 +1,63 @@
+name: Sync Upstream
+
+# Keeps novaterm-packages in sync with termux/termux-packages.
+# Runs weekly and can be triggered manually.
+# On conflict, creates a PR for manual resolution.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 6am UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Merge upstream changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "NovaTerm Bot"
+          git config user.email "bot@novaterm.dev"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/termux/termux-packages.git || true
+          git fetch upstream master --depth=100
+
+      - name: Attempt merge
+        id: merge
+        run: |
+          if git merge upstream/master --no-edit; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "Merge successful"
+          else
+            echo "status=conflict" >> $GITHUB_OUTPUT
+            git merge --abort
+            echo "Merge has conflicts"
+          fi
+
+      - name: Push if clean merge
+        if: steps.merge.outputs.status == 'success'
+        run: git push origin master
+
+      - name: Create PR on conflict
+        if: steps.merge.outputs.status == 'conflict'
+        run: |
+          BRANCH="upstream-sync-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git merge upstream/master --no-commit || true
+          git add -A
+          git commit -m "chore: upstream sync (conflicts need resolution)" || true
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Upstream sync $(date +%Y-%m-%d) — conflicts" \
+            --body "Automatic merge from termux/termux-packages had conflicts. Please resolve manually." \
+            --head "$BRANCH" \
+            --base master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
