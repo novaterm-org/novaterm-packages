@@ -39,6 +39,9 @@ jobs:
           EXTRA_FLAG=""
           [ -n "$EXTRA" ] && EXTRA_FLAG="--add $EXTRA"
 
+          # Fix permissions for Docker output
+          chmod 777 .
+
           # Use TERMUX_DOCKER_IMAGE_NAME to point to our local image
           export TERMUX_DOCKER_IMAGE_NAME="novaterm/package-builder:latest"
           ./scripts/run-docker.sh ./scripts/generate-bootstraps.sh \
