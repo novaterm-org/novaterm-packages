@@ -49,8 +49,8 @@ jobs:
           df -h /
 
           # Remove large pre-installed toolchains that we don't need
+          # NOTE: Do NOT remove /usr/local/lib/android — NDK is needed by termux build system
           sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache || true
           sudo rm -rf /opt/az || true
