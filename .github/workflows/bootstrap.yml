@@ -1,24 +1,25 @@
 name: Build Bootstrap
 
-# Generates bootstrap archives by downloading pre-built .debs from the
-# Termux APT repository and repackaging them into a ZIP.
+# Builds bootstrap archives FROM SOURCE using build-bootstraps.sh inside
+# the Termux Docker container. This compiles all packages from source
+# (unlike generate-bootstraps.sh which downloads pre-built .debs).
 #
-# This uses generate-bootstraps.sh which does NOT need Docker — it only
-# downloads and extracts packages. Docker is only needed for
-# build-bootstraps.sh (compiles from source).
-#
-# This is the same approach as Termux's own bootstrap_archives.yml:
-# https://github.com/termux/termux-packages/blob/master/.github/workflows/bootstrap_archives.yml
+# This is the proper way to produce bootstrap ZIPs for NovaTerm,
+# ensuring packages are compiled with our patches and prefix.
 
 on:
   workflow_dispatch:
     inputs:
       extra_packages:
-        description: 'Additional packages (comma-separated, e.g. openssh,git)'
+        description: "Additional packages (comma-separated, e.g. openssh,git)"
         required: false
-        default: ''
+        default: ""
+      force_rebuild:
+        description: "Force rebuild all packages (ignore ccache)"
+        type: boolean
+        default: false
   schedule:
-    - cron: '0 4 * * 0'  # Sundays 4am UTC
+    - cron: "0 4 * * 0" # Sundays 4am UTC
 
 permissions: {}
 
@@ -28,24 +29,88 @@ concurrency:
 
 jobs:
   build:
-    name: Build Bootstrap (aarch64)
+    name: Build Bootstrap from Source (aarch64)
     permissions:
-      contents: write  # For creating releases
+      contents: write # For creating releases
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 360
+    env:
+      TERMUX_ARCH: aarch64
+
     steps:
       - name: Clone repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Free disk space
         run: |
-          # generate-bootstraps.sh needs: ar, awk, curl, grep, gzip,
-          # find, sed, tar, xargs, xz, zip, jq
-          # Most are pre-installed on ubuntu-24.04. Ensure the rest:
-          sudo apt-get update -qq
-          sudo apt-get install -yqq binutils xz-utils zip jq
+          echo "=== Disk space BEFORE cleanup ==="
+          df -h /
 
-      - name: Generate bootstrap
+          # Remove large pre-installed toolchains that we don't need
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache || true
+          sudo rm -rf /opt/az || true
+          sudo rm -rf /opt/pipx || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /usr/share/miniconda || true
+          sudo rm -rf /usr/share/az_* || true
+          sudo rm -rf /usr/share/gradle-* || true
+          sudo rm -rf /home/runner/.rustup || true
+
+          # Remove CodeQL bundles
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+
+          # Remove Docker images to free space
+          docker image prune -af || true
+          sudo rm -rf /var/lib/containerd/io.containerd.content.v1.content/ || true
+
+          # Remove snap
+          sudo rm -rf /snap || true
+          sudo rm -rf /var/snap || true
+
+          # Clean apt cache
+          sudo apt-get clean || true
+
+          echo "=== Disk space AFTER cleanup ==="
+          df -h /
+
+      - name: Enable zram
+        uses: ./.github/actions/zram
+        with:
+          algorithm: zstd
+          size: 16G
+          priority: 100
+          device_name: /dev/zram0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('scripts/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-bootstrap-${{ env.TERMUX_ARCH }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-bootstrap-${{ env.TERMUX_ARCH }}-
+
+      - name: Pull Docker image
+        run: |
+          # Pull the pre-built Termux builder image
+          docker pull ghcr.io/termux/package-builder:latest
+
+      - name: Build bootstrap from source
         run: |
           EXTRA="${{ github.event.inputs.extra_packages }}"
           EXTRA_FLAG=""
@@ -53,40 +118,71 @@ jobs:
             EXTRA_FLAG="--add $EXTRA"
           fi
 
-          # Run directly on the runner — no Docker needed.
-          # generate-bootstraps.sh downloads pre-built .debs from the
-          # Termux APT repository and repackages them.
-          ./scripts/generate-bootstraps.sh \
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          # Mount ccache into the container for faster rebuilds
+          export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
+
+          # build-bootstraps.sh compiles ALL packages from source inside Docker.
+          # This takes 2-5 hours depending on cache hits.
+          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh \
             --architectures aarch64 \
-            $EXTRA_FLAG
+            $EXTRA_FLAG \
+            $FORCE_FLAG
+
+      - name: Collect bootstrap artifacts
+        run: |
+          # build-bootstraps.sh outputs ZIPs in the repo root
+          echo "=== Bootstrap files ==="
+          ls -lh bootstrap-*.zip 2>/dev/null || {
+            echo "ERROR: No bootstrap ZIP files found!"
+            echo "Checking alternative locations..."
+            find . -name "bootstrap-*.zip" -type f 2>/dev/null
+            exit 1
+          }
 
       - name: Calculate checksums
         run: |
           sha256sum bootstrap-*.zip > checksums-sha256.txt
-          echo "=== Bootstrap ==="
-          ls -lh bootstrap-*.zip
+          echo "=== Checksums ==="
           cat checksums-sha256.txt
+          echo ""
+          echo "=== Size ==="
+          ls -lh bootstrap-*.zip
 
       - name: Smoke test bootstrap contents
         run: |
           mkdir -p /tmp/bootstrap-test
           cd /tmp/bootstrap-test
           unzip -q "${{ github.workspace }}/bootstrap-aarch64.zip"
+
           echo "=== Verifying essential files ==="
+          errors=0
           for f in bin/bash bin/sh bin/apt bin/dpkg lib/libtermux-exec.so; do
             if [ -e "$f" ]; then
-              echo "OK: $f"
+              echo "  OK: $f"
             else
-              echo "MISSING: $f"
+              echo "  MISSING: $f"
+              errors=$((errors + 1))
             fi
           done
+
+          echo ""
           echo "=== SYMLINKS.txt ==="
           wc -l SYMLINKS.txt
           head -5 SYMLINKS.txt
+
+          echo ""
           echo "=== Total files ==="
           find . -type f | wc -l
-          echo "=== Archive size ==="
-          du -sh "${{ github.workspace }}/bootstrap-aarch64.zip"
+
+          if [ "$errors" -gt 0 ]; then
+            echo ""
+            echo "WARNING: $errors essential files missing from bootstrap!"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,25 +192,46 @@ jobs:
             bootstrap-*.zip
             checksums-sha256.txt
           retention-days: 90
+          compression-level: 0 # Already compressed ZIP
 
       - name: Create release
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="bootstrap-$(date '+%Y.%m.%d')-r${{ github.run_number }}"
+          # Determine tag with revision number for same-day builds
+          BASE_TAG="bootstrap-$(date '+%Y.%m.%d')"
+          EXISTING=$(gh release list --limit 50 --json tagName -q '.[].tagName' | grep "^${BASE_TAG}" | sort -V | tail -1 || true)
+          if [ -n "$EXISTING" ]; then
+            REV=$(echo "$EXISTING" | grep -oP 'r\K[0-9]+' || echo "0")
+            REV=$((REV + 1))
+          else
+            REV=1
+          fi
+          TAG="${BASE_TAG}-r${REV}+source"
+
+          BOOTSTRAP_SIZE=$(du -sh bootstrap-aarch64.zip | cut -f1)
+          FILE_COUNT=$(unzip -l bootstrap-aarch64.zip | tail -1 | awk '{print $2}')
+          CHECKSUM=$(sha256sum bootstrap-aarch64.zip | cut -d' ' -f1)
+
           gh release create "$TAG" \
             --title "Bootstrap aarch64 ($TAG)" \
-            --notes "$(cat <<'NOTES'
-          NovaTerm bootstrap archive (aarch64).
+            --notes "$(cat <<EOF
+          ## NovaTerm Bootstrap Archive (aarch64)
 
-          Built from Termux APT repository packages.
-          PREFIX: /data/data/com.termux/files/usr
+          **Built from source** using \`build-bootstraps.sh\` in the Termux Docker container.
 
-          **Usage:** Download `bootstrap-aarch64.zip` and place in
-          `NovaTerm/app/src/main/cpp/`, then rebuild the APK.
+          | Property | Value |
+          |----------|-------|
+          | Architecture | aarch64 (arm64-v8a) |
+          | Size | ${BOOTSTRAP_SIZE} |
+          | Files | ${FILE_COUNT} |
+          | SHA-256 | \`${CHECKSUM}\` |
+          | PREFIX | \`/data/data/com.termux/files/usr\` |
+          | Extra packages | ${{ github.event.inputs.extra_packages || 'default set' }} |
 
-          Extra packages: ${{ github.event.inputs.extra_packages || 'default set' }}
-          NOTES
+          ### Usage
+          Download \`bootstrap-aarch64.zip\` and place it in
+          \`NovaTerm/app/src/main/assets/bootstrap-aarch64.zip\`, then rebuild the APK.
+          EOF
           )" \
             bootstrap-*.zip checksums-sha256.txt

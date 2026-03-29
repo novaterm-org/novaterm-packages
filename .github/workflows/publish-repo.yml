@@ -1,0 +1,317 @@
+name: Publish APT Repository
+
+# Creates a signed APT repository from built .deb files and publishes it.
+# Can be triggered after build-packages completes, or manually with
+# artifact upload.
+#
+# Repository structure (reprepro):
+#   dists/stable/main/binary-aarch64/
+#   pool/main/
+#
+# Publishing targets:
+#   1. GitHub Pages (default, free)
+#   2. Cloudflare R2 (optional, via secrets)
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: "Run ID of build-packages workflow to fetch artifacts from (leave empty for latest)"
+        required: false
+        type: string
+      distribution:
+        description: "APT distribution name"
+        required: false
+        default: "stable"
+        type: string
+  workflow_run:
+    workflows: ["Build Packages"]
+    types:
+      - completed
+
+permissions: {}
+
+concurrency:
+  group: publish-repo
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish APT Repository
+    # Only run on successful build-packages completion (or manual trigger)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write # For GitHub Pages deployment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install reprepro
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq reprepro
+
+      - name: Download .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: incoming-debs/
+          merge-multiple: false
+          run-id: ${{ inputs.artifact_run_id || github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Collect all .deb files
+        id: collect
+        run: |
+          mkdir -p debs
+          find incoming-debs -name "*.deb" -type f -exec cp {} debs/ \;
+
+          DEB_COUNT=$(find debs -name "*.deb" -type f | wc -l)
+          echo "deb_count=${DEB_COUNT}" >> $GITHUB_OUTPUT
+
+          if [ "$DEB_COUNT" -eq 0 ]; then
+            echo "ERROR: No .deb files found in artifacts"
+            exit 1
+          fi
+
+          echo "=== Found ${DEB_COUNT} .deb files ==="
+          ls -lh debs/*.deb
+
+      - name: Import GPG signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "WARNING: No GPG key configured. Repository will be unsigned."
+            echo "To sign packages, add APT_GPG_PRIVATE_KEY and APT_GPG_PASSPHRASE secrets."
+            echo "signed=false" >> $GITHUB_ENV
+          else
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+            echo "GPG_KEY_ID=${GPG_KEY_ID}" >> $GITHUB_ENV
+            echo "signed=true" >> $GITHUB_ENV
+            echo "GPG key imported: ${GPG_KEY_ID}"
+          fi
+
+      - name: Configure reprepro
+        env:
+          DISTRIBUTION: ${{ inputs.distribution || 'stable' }}
+        run: |
+          REPO_DIR="${{ github.workspace }}/apt-repo"
+          mkdir -p "${REPO_DIR}/conf"
+
+          # Distributions config
+          if [ "${{ env.signed }}" = "true" ]; then
+            SIGN_WITH="SignWith: ${{ env.GPG_KEY_ID }}"
+          else
+            SIGN_WITH=""
+          fi
+
+          cat > "${REPO_DIR}/conf/distributions" <<EOF
+          Origin: NovaTerm
+          Label: NovaTerm
+          Codename: ${DISTRIBUTION}
+          Architectures: aarch64 arm i686 x86_64
+          Components: main
+          Description: NovaTerm package repository
+          ${SIGN_WITH}
+          EOF
+
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' "${REPO_DIR}/conf/distributions"
+          # Remove empty lines from missing SignWith
+          sed -i '/^$/d' "${REPO_DIR}/conf/distributions"
+
+          cat > "${REPO_DIR}/conf/options" <<EOF
+          verbose
+          basedir ${REPO_DIR}
+          EOF
+          sed -i 's/^          //' "${REPO_DIR}/conf/options"
+
+          echo "=== reprepro configuration ==="
+          cat "${REPO_DIR}/conf/distributions"
+          echo "REPO_DIR=${REPO_DIR}" >> $GITHUB_ENV
+
+      - name: Add packages to repository
+        env:
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          DISTRIBUTION: ${{ inputs.distribution || 'stable' }}
+        run: |
+          # Configure gpg-agent for passphrase if signing
+          if [ "${{ env.signed }}" = "true" ] && [ -n "$GPG_PASSPHRASE" ]; then
+            export GPG_TTY=$(tty) 2>/dev/null || true
+            echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
+            gpgconf --kill gpg-agent
+            gpgconf --launch gpg-agent
+
+            # Cache the passphrase
+            KEYGRIP=$(gpg --list-secret-keys --with-keygrip | grep Keygrip | head -1 | awk '{print $3}')
+            echo "$GPG_PASSPHRASE" | /usr/lib/gnupg/gpg-preset-passphrase --preset "$KEYGRIP"
+          fi
+
+          # Add each .deb to the repository
+          ERRORS=0
+          for deb in debs/*.deb; do
+            echo "Adding: $(basename $deb)"
+            if ! reprepro -b "${{ env.REPO_DIR }}" includedeb "${DISTRIBUTION}" "$deb" 2>&1; then
+              echo "WARNING: Failed to add $(basename $deb)"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "WARNING: ${ERRORS} packages failed to add"
+          fi
+
+          echo "=== Repository contents ==="
+          reprepro -b "${{ env.REPO_DIR }}" list "${DISTRIBUTION}" || true
+
+      - name: Export GPG public key
+        if: env.signed == 'true'
+        run: |
+          gpg --armor --export "${{ env.GPG_KEY_ID }}" > "${{ env.REPO_DIR }}/novaterm-repo.gpg.asc"
+          gpg --export "${{ env.GPG_KEY_ID }}" > "${{ env.REPO_DIR }}/novaterm-repo.gpg"
+
+          echo "=== Public key exported ==="
+          gpg --list-keys "${{ env.GPG_KEY_ID }}"
+
+      - name: Generate repository index page
+        run: |
+          cat > "${{ env.REPO_DIR }}/index.html" <<'HTMLEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>NovaTerm Package Repository</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif; max-width: 700px; margin: 2em auto; padding: 0 1em; color: #ebdbb2; background: #282828; }
+              code { background: #3c3836; padding: 2px 6px; border-radius: 3px; }
+              pre { background: #3c3836; padding: 1em; border-radius: 6px; overflow-x: auto; }
+              a { color: #83a598; }
+              h1 { color: #fabd2f; }
+            </style>
+          </head>
+          <body>
+            <h1>NovaTerm Package Repository</h1>
+            <p>APT repository for NovaTerm terminal emulator packages.</p>
+            <h2>Setup</h2>
+            <pre><code># Add repository
+          echo "deb [signed-by=/data/data/com.termux/files/usr/share/keyrings/novaterm-repo.gpg] https://prometeoDEV.github.io/novaterm-packages stable main" > $PREFIX/etc/apt/sources.list.d/novaterm.list
+
+          # Import GPG key
+          curl -fsSL https://prometeodev.github.io/novaterm-packages/novaterm-repo.gpg -o $PREFIX/share/keyrings/novaterm-repo.gpg
+
+          # Update and install
+          apt update
+          apt install &lt;package-name&gt;</code></pre>
+            <h2>Packages</h2>
+            <p>Browse the <a href="dists/">dists/</a> and <a href="pool/">pool/</a> directories.</p>
+          </body>
+          </html>
+          HTMLEOF
+
+      - name: Generate checksums
+        run: |
+          cd "${{ env.REPO_DIR }}"
+          find pool -name "*.deb" -type f -exec sha256sum {} \; | sort -k2 > checksums-sha256.txt
+          echo "=== Package checksums ==="
+          cat checksums-sha256.txt
+
+      - name: Upload repository as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-repository
+          path: ${{ env.REPO_DIR }}/
+          retention-days: 90
+
+      # --- GitHub Pages deployment ---
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.REPO_DIR }}
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Generate summary
+        run: |
+          DEB_COUNT="${{ steps.collect.outputs.deb_count }}"
+          echo "## APT Repository Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Packages:** ${DEB_COUNT} .deb files" >> $GITHUB_STEP_SUMMARY
+          echo "- **Distribution:** ${{ inputs.distribution || 'stable' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Signed:** ${{ env.signed }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ env.signed }}" = "true" ]; then
+            echo "- **GPG Key:** \`${{ env.GPG_KEY_ID }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **URL:** ${{ steps.deploy.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+
+  # --- Optional: Upload to Cloudflare R2 ---
+  upload-r2:
+    name: Upload to Cloudflare R2
+    needs: publish
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      vars.R2_BUCKET_NAME != ''
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download repository artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: apt-repository
+          path: apt-repo/
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          no_check_bucket = true
+          EOF
+
+      - name: Sync to R2
+        env:
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+        run: |
+          rclone sync apt-repo/ "r2:${R2_BUCKET_NAME}/" \
+            --progress \
+            --checksum \
+            --transfers 8
+
+          echo "=== Upload complete ==="
+          rclone ls "r2:${R2_BUCKET_NAME}/" | head -20

@@ -1,21 +1,21 @@
 {
   "pkg_format": "debian",
   "packages": {
-    "name": "termux-main",
+    "name": "nvterm-main",
     "distribution": "stable",
     "component": "main",
-    "url": "https://packages-cf.termux.dev/apt/termux-main"
+    "url": "https://packages.novaterm.dev/apt/nvterm-main"
   },
   "root-packages": {
-    "name": "termux-root",
+    "name": "nvterm-root",
     "distribution": "root",
     "component": "stable",
-    "url": "https://packages-cf.termux.dev/apt/termux-root"
+    "url": "https://packages.novaterm.dev/apt/nvterm-root"
   },
   "x11-packages": {
-    "name": "termux-x11",
+    "name": "nvterm-x11",
     "distribution": "x11",
     "component": "main",
-    "url": "https://packages-cf.termux.dev/apt/termux-x11"
+    "url": "https://packages.novaterm.dev/apt/nvterm-x11"
   }
 }

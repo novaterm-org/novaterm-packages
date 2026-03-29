@@ -1,18 +1,36 @@
 # NovaTerm Packages
 
-Fork of [termux-packages](https://github.com/termux/termux-packages) configured for **NovaTerm** (`com.novaterm.app`).
+Fork of [termux-packages](https://github.com/termux/termux-packages) configured for **NovaTerm** (`com.nvterm`).
 
 ## What's different
 
 | Property | Termux | NovaTerm |
 |----------|--------|----------|
-| Package name | `com.termux` | `com.novaterm.app` |
-| Project name | Termux | NovaTerm |
+| App name | Termux | NovaTerm |
+| Internal name | `termux` | `nvterm` |
+| Package name | `com.termux` | `com.nvterm` |
 | Org | termux | PrometeoDEV |
 | Architecture | 4 (arm, arm64, x86, x64) | 1 (arm64 only) |
-| PREFIX | `/data/data/com.termux/files/usr` | `/data/data/com.novaterm.app/files/usr` |
+| PREFIX | `/data/data/com.termux/files/usr` | `/data/data/com.nvterm/files/usr` |
+| HOME | `/data/data/com.termux/files/home` | `/data/data/com.nvterm/files/home` |
+| Repo URL | `packages-cf.termux.dev` | `packages.novaterm.dev` |
 
 All packages compiled from this fork have NovaTerm paths hardcoded in binaries.
+
+### properties.sh configuration
+
+```bash
+TERMUX__NAME="NovaTerm"
+TERMUX__INTERNAL_NAME="nvterm"        # <=7 chars, used in paths/filenames
+TERMUX_APP__PACKAGE_NAME="com.nvterm"
+TERMUX__REPOS_HOST_ORG_NAME="PrometeoDEV"
+TERMUX__REPOS_HOST_ORG_URL="https://github.com/PrometeoDEV"
+```
+
+Derived variables (automatic):
+- `TERMUX__LNAME` → `novaterm`
+- `TERMUX__UNAME` → `NOVATERM`
+- `TERMUX_APP__DATA_DIR` → `/data/data/com.nvterm`
 
 ## Building
 
@@ -43,7 +61,7 @@ All packages compiled from this fork have NovaTerm paths hardcoded in binaries.
 
 1. Run the `Build Bootstrap` workflow
 2. Download `bootstrap-aarch64.zip` from the release
-3. Place in `NovaTerm/app/src/main/cpp/bootstrap-aarch64.zip`
+3. Place in `NovaTerm/app/src/main/assets/bootstrap-aarch64.zip`
 4. Rebuild NovaTerm APK
 
 ## License

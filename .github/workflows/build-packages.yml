@@ -1,0 +1,227 @@
+name: Build Packages
+
+# Builds individual packages from source for the NovaTerm APT repository.
+# Accepts package names as input, builds them in parallel using matrix strategy,
+# and uploads .deb files as artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Space-separated package names (e.g. 'bash coreutils curl')"
+        required: true
+        type: string
+      architectures:
+        description: "Architectures to build for"
+        required: false
+        default: "aarch64"
+        type: choice
+        options:
+          - aarch64
+          - "aarch64 arm"
+          - "aarch64 arm i686 x86_64"
+  workflow_call:
+    inputs:
+      packages:
+        description: "Space-separated package names"
+        required: true
+        type: string
+      architectures:
+        description: "Architectures to build for"
+        required: false
+        default: "aarch64"
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: build-packages-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # First job: parse inputs and generate the matrix dynamically
+  prepare:
+    name: Prepare build matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.result }}
+    steps:
+      - name: Generate matrix
+        id: matrix
+        run: |
+          # Parse architectures
+          ARCHS="${{ inputs.architectures }}"
+          ARCH_JSON=$(echo "$ARCHS" | tr ' ' '\n' | jq -R . | jq -sc .)
+
+          # Parse packages into individual items for parallel builds
+          PACKAGES="${{ inputs.packages }}"
+          PKG_JSON=$(echo "$PACKAGES" | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -sc .)
+
+          # Build the matrix
+          MATRIX=$(jq -nc \
+            --argjson arch "$ARCH_JSON" \
+            --argjson pkg "$PKG_JSON" \
+            '{arch: $arch, package: $pkg}')
+
+          echo "result=$MATRIX" >> $GITHUB_OUTPUT
+          echo "=== Build matrix ==="
+          echo "$MATRIX" | jq .
+
+  build:
+    name: "Build ${{ matrix.package }} (${{ matrix.arch }})"
+    needs: prepare
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate package exists
+        run: |
+          PACKAGE="${{ matrix.package }}"
+          FOUND=false
+          for repo_path in $(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json); do
+            if [ -d "${repo_path}/${PACKAGE}" ]; then
+              FOUND=true
+              echo "Found ${PACKAGE} in ${repo_path}/"
+              break
+            fi
+          done
+          if [ "$FOUND" != "true" ]; then
+            echo "ERROR: Package '${PACKAGE}' not found in any repository path"
+            exit 1
+          fi
+
+      - name: Free disk space (for large packages)
+        run: |
+          # Check if this is a large package
+          PACKAGE="${{ matrix.package }}"
+          if grep -qFx "$PACKAGE" ./scripts/big-pkgs.list 2>/dev/null; then
+            echo "Large package detected, freeing disk space..."
+            ./scripts/free-space.sh
+          else
+            # Minimal cleanup for regular packages
+            sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache || true
+            docker image prune -af || true
+          fi
+        env:
+          CI: "true"
+
+      - name: Enable zram
+        uses: ./.github/actions/zram
+        with:
+          algorithm: zstd
+          size: 16G
+          priority: 100
+          device_name: /dev/zram0
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ matrix.package }}-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ matrix.package }}-${{ matrix.arch }}-
+            ${{ runner.os }}-ccache-${{ matrix.package }}-
+
+      - name: Pull Docker image
+        run: docker pull ghcr.io/termux/package-builder:latest
+
+      - name: Build package
+        run: |
+          PACKAGE="${{ matrix.package }}"
+          ARCH="${{ matrix.arch }}"
+
+          # Mount ccache for faster rebuilds
+          export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
+
+          echo "Building ${PACKAGE} for ${ARCH}..."
+          ./scripts/run-docker.sh ./build-package.sh -I -C -a "$ARCH" "$PACKAGE"
+
+      - name: Collect .deb files
+        id: collect
+        run: |
+          mkdir -p debs
+          PACKAGE="${{ matrix.package }}"
+          ARCH="${{ matrix.arch }}"
+
+          # Move built .debs (including subpackages) to debs/
+          if [ -d "output" ]; then
+            find output -name "*.deb" -type f -exec mv {} debs/ \;
+          fi
+
+          DEB_COUNT=$(find debs -name "*.deb" -type f | wc -l)
+          echo "deb_count=${DEB_COUNT}" >> $GITHUB_OUTPUT
+
+          if [ "$DEB_COUNT" -eq 0 ]; then
+            echo "WARNING: No .deb files produced for ${PACKAGE} (${ARCH})"
+          else
+            echo "=== Built .deb files ==="
+            ls -lh debs/*.deb
+          fi
+
+      - name: Calculate checksums
+        if: steps.collect.outputs.deb_count != '0'
+        run: |
+          cd debs
+          sha256sum *.deb > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Upload .deb artifacts
+        if: steps.collect.outputs.deb_count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.package }}-${{ matrix.arch }}
+          path: debs/
+          retention-days: 30
+
+  # Summary job that waits for all builds and reports status
+  summary:
+    name: Build Summary
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          path: all-debs/
+          merge-multiple: false
+
+      - name: Generate summary
+        run: |
+          echo "## Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=0
+          if [ -d "all-debs" ]; then
+            for dir in all-debs/debs-*/; do
+              if [ -d "$dir" ]; then
+                NAME=$(basename "$dir" | sed 's/^debs-//')
+                COUNT=$(find "$dir" -name "*.deb" -type f | wc -l)
+                TOTAL=$((TOTAL + COUNT))
+                echo "- **${NAME}**: ${COUNT} .deb file(s)" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total: ${TOTAL} .deb files built**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Merge all debs into single artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-debs
+          path: all-debs/
+          retention-days: 30
