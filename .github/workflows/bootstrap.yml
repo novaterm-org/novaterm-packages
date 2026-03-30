@@ -110,6 +110,36 @@ jobs:
           # Pull the pre-built Termux builder image
           docker pull ghcr.io/termux/package-builder:latest
 
+      - name: Install missing Android SDK platforms
+        run: |
+          # The upstream Docker image (ghcr.io/termux/package-builder) only
+          # installs platforms;android-{24,28,35} via setup-android-sdk.sh.
+          # However, termux-am (a dependency of termux-tools) uses Gradle with
+          # compileSdkVersion 33, which requires platforms;android-33.
+          # Without it, Gradle fails with:
+          #   "Warning: Failed to read or create install properties file"
+          #   "Failed to install the following SDK components"
+          #
+          # We start the container first, then install the missing platform
+          # before running the build.
+          export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
+
+          # Start the container (run-docker.sh creates it on first call)
+          ./scripts/run-docker.sh bash -c '
+            . /home/builder/termux-packages/scripts/properties.sh
+            SDK_MANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            if [ ! -x "$SDK_MANAGER" ]; then
+              SDK_MANAGER="$ANDROID_HOME/cmdline-tools/bin/sdkmanager"
+            fi
+            echo "Installing platforms;android-33 for termux-am Gradle build..."
+            yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" "platforms;android-33" || {
+              echo "WARNING: sdkmanager failed, trying chmod workaround..."
+              chmod -R u+rw "$ANDROID_HOME" 2>/dev/null || true
+              yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" "platforms;android-33"
+            }
+            echo "SDK platform android-33 installed successfully"
+          '
+
       - name: Build bootstrap from source
         run: |
           # Always include curl and git (not in default bootstrap, needed for NovaTerm)
@@ -124,6 +154,7 @@ jobs:
           fi
 
           # Mount ccache into the container for faster rebuilds
+          # (container already created by the SDK install step above)
           export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
 
           # build-bootstraps.sh compiles ALL packages from source inside Docker.
