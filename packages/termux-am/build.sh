@@ -33,8 +33,12 @@ termux_step_make() {
 	export ANDROID_HOME
 	export GRADLE_OPTS="-Dorg.gradle.daemon=false -Xmx1536m -Dorg.gradle.java.home=/usr/lib/jvm/java-1.17.0-openjdk-amd64"
 
+	# Skip lintVitalReportRelease — it requires additional SDK components
+	# (build-tools matching compileSdkVersion) that may not be present.
+	# We only need the APK, not lint reports.
 	$TERMUX_PKG_TMPDIR/gradle/gradle-$_GRADLE_VERSION/bin/gradle \
-		:app:assembleRelease
+		:app:assembleRelease \
+		-x lintVitalReportRelease
 }
 
 termux_step_make_install() {
