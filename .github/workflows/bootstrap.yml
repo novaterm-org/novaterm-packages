@@ -115,29 +115,73 @@ jobs:
           # The upstream Docker image (ghcr.io/termux/package-builder) only
           # installs platforms;android-{24,28,35} via setup-android-sdk.sh.
           # However, termux-am (a dependency of termux-tools) uses Gradle with
-          # compileSdkVersion 33, which requires platforms;android-33.
-          # Without it, Gradle fails with:
-          #   "Warning: Failed to read or create install properties file"
+          # compileSdkVersion 33 (AGP 7.4.2), which requires:
+          #   - platforms;android-33
+          #   - build-tools;30.0.3
+          # Without them, Gradle fails with:
           #   "Failed to install the following SDK components"
           #
-          # We start the container first, then install the missing platform
-          # before running the build.
+          # The SDK directory inside the container may have root-owned
+          # subdirectories, so we fix permissions before running sdkmanager
+          # to avoid "Failed to read or create install properties file".
           export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
 
-          # Start the container (run-docker.sh creates it on first call)
           ./scripts/run-docker.sh bash -c '
-            . /home/builder/termux-packages/scripts/properties.sh
+            ANDROID_HOME="${ANDROID_HOME:-/home/builder/lib/android-sdk}"
+
+            # Detect actual SDK path (may include version suffix like -9123335)
+            if [ ! -d "$ANDROID_HOME" ]; then
+              ANDROID_HOME=$(find /home/builder/lib -maxdepth 1 -name "android-sdk*" -type d | head -1)
+            fi
+            echo "ANDROID_HOME=$ANDROID_HOME"
+
+            # Fix permissions so sdkmanager can write install metadata
+            sudo chown -R builder:builder "$ANDROID_HOME" 2>/dev/null || true
+            sudo chmod -R u+rw "$ANDROID_HOME" 2>/dev/null || true
+
+            # Find sdkmanager
             SDK_MANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
             if [ ! -x "$SDK_MANAGER" ]; then
               SDK_MANAGER="$ANDROID_HOME/cmdline-tools/bin/sdkmanager"
             fi
-            echo "Installing platforms;android-33 for termux-am Gradle build..."
-            yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" "platforms;android-33" || {
-              echo "WARNING: sdkmanager failed, trying chmod workaround..."
-              chmod -R u+rw "$ANDROID_HOME" 2>/dev/null || true
-              yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" "platforms;android-33"
+            if [ ! -x "$SDK_MANAGER" ]; then
+              SDK_MANAGER=$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1)
+            fi
+            echo "Using sdkmanager: $SDK_MANAGER"
+
+            # Accept all licenses
+            yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" --licenses 2>/dev/null || true
+
+            # Install both required components
+            echo "Installing platforms;android-33 and build-tools;30.0.3..."
+            yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" \
+              "platforms;android-33" \
+              "build-tools;30.0.3" \
+            || {
+              echo "ERROR: sdkmanager failed, retrying with verbose..."
+              yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" --verbose \
+                "platforms;android-33" \
+                "build-tools;30.0.3"
             }
-            echo "SDK platform android-33 installed successfully"
+
+            # Verify installation
+            echo "=== Verifying SDK components ==="
+            ERRORS=0
+            for comp in platforms/android-33 build-tools/30.0.3; do
+              if [ -d "$ANDROID_HOME/$comp" ]; then
+                echo "  OK: $comp"
+              else
+                echo "  MISSING: $comp"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+            if [ "$ERRORS" -gt 0 ]; then
+              echo "FATAL: $ERRORS SDK components failed to install"
+              ls -la "$ANDROID_HOME/platforms/" 2>/dev/null || true
+              ls -la "$ANDROID_HOME/build-tools/" 2>/dev/null || true
+              exit 1
+            fi
+            echo "All SDK components installed successfully"
           '
 
       - name: Build bootstrap from source
