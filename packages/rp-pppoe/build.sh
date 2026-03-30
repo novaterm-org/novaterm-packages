@@ -4,9 +4,8 @@ TERMUX_PKG_LICENSE="GPL-2.0"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION=4.0
 TERMUX_PKG_REVISION=1
-#TERMUX_PKG_SRCURL=https://dianne.skoll.ca/projects/rp-pppoe/download/rp-pppoe-${TERMUX_PKG_VERSION}.tar.gz
-TERMUX_PKG_SRCURL=https://fossies.org/linux/misc/rp-pppoe-${TERMUX_PKG_VERSION}.tar.gz
-TERMUX_PKG_SHA256=41ac34e5db4482f7a558780d3b897bdbb21fae3fef4645d2852c3c0c19d81cea
+TERMUX_PKG_SRCURL=https://dianne.skoll.ca/projects/rp-pppoe/download.php?file=rp-pppoe-${TERMUX_PKG_VERSION}.tar.gz
+TERMUX_PKG_SHA256=1d3f66dd28526d05f1ca53e8b8bf877cd58e03c2be9028c061bf2b4d9a4e83c7
 TERMUX_PKG_BUILD_IN_SRC=true
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 --disable-static

@@ -210,10 +210,10 @@ jobs:
             <p>APT repository for NovaTerm terminal emulator packages.</p>
             <h2>Setup</h2>
             <pre><code># Add repository
-          echo "deb [signed-by=/data/data/com.termux/files/usr/share/keyrings/novaterm-repo.gpg] https://prometeoDEV.github.io/novaterm-packages stable main" > $PREFIX/etc/apt/sources.list.d/novaterm.list
+          echo "deb [signed-by=/data/data/com.nvterm/files/usr/share/keyrings/novaterm-repo.gpg] https://prometeodev.github.io/novaterm-packages stable main" > \$PREFIX/etc/apt/sources.list.d/novaterm.list
 
           # Import GPG key
-          curl -fsSL https://prometeodev.github.io/novaterm-packages/novaterm-repo.gpg -o $PREFIX/share/keyrings/novaterm-repo.gpg
+          curl -fsSL https://prometeodev.github.io/novaterm-packages/novaterm-repo.gpg -o \$PREFIX/share/keyrings/novaterm-repo.gpg
 
           # Update and install
           apt update

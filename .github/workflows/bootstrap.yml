@@ -112,11 +112,11 @@ jobs:
 
       - name: Build bootstrap from source
         run: |
+          # Always include curl and git (not in default bootstrap, needed for NovaTerm)
+          ALWAYS_ADD="curl,git,openssh"
           EXTRA="${{ github.event.inputs.extra_packages }}"
-          EXTRA_FLAG=""
-          if [ -n "$EXTRA" ]; then
-            EXTRA_FLAG="--add $EXTRA"
-          fi
+          ALL_EXTRA="${ALWAYS_ADD}${EXTRA:+,$EXTRA}"
+          EXTRA_FLAG="--add $ALL_EXTRA"
 
           FORCE_FLAG=""
           if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
@@ -226,7 +226,7 @@ jobs:
           | Size | ${BOOTSTRAP_SIZE} |
           | Files | ${FILE_COUNT} |
           | SHA-256 | \`${CHECKSUM}\` |
-          | PREFIX | \`/data/data/com.termux/files/usr\` |
+          | PREFIX | \`/data/data/com.nvterm/files/usr\` |
           | Extra packages | ${{ github.event.inputs.extra_packages || 'default set' }} |
 
           ### Usage

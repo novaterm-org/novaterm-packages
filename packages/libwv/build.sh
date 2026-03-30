@@ -4,8 +4,8 @@ TERMUX_PKG_LICENSE="GPL-2.0"
 TERMUX_PKG_MAINTAINER="@termux"
 TERMUX_PKG_VERSION=1.2.9
 TERMUX_PKG_REVISION=6
-TERMUX_PKG_SRCURL=https://fossies.org/linux/misc/old/wv-${TERMUX_PKG_VERSION}.tar.gz
-TERMUX_PKG_SHA256=4c730d3b325c0785450dd3a043eeb53e1518598c4f41f155558385dd2635c19d
+TERMUX_PKG_SRCURL=https://github.com/AbiWord/wv/archive/refs/tags/wv-1-2-9.tar.gz
+TERMUX_PKG_SHA256=effe7a2b5b81a3707c60894e7799f7c086fdec76549eb80c1e8fb835b873d2c9
 TERMUX_PKG_DEPENDS="glib, libgsf, libpng, libxml2, zlib"
 
 termux_step_pre_configure() {
