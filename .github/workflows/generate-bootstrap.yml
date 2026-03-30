@@ -1,0 +1,105 @@
+name: Generate Bootstrap (Fast)
+
+# Downloads pre-built .deb packages from Termux's apt repo,
+# repackages into bootstrap ZIP. Takes ~5 minutes vs 2-5 hours
+# for build-from-source. NovaTerm's BootstrapInstaller handles
+# binary patching of com.termux → com.nvterm at install time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: "Additional packages (comma-separated)"
+        required: false
+        default: "openssh,git"
+
+permissions: {}
+
+jobs:
+  generate:
+    name: Generate Bootstrap (aarch64)
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y jq
+
+      - name: Set package name for generate
+        run: |
+          # generate-bootstraps.sh downloads .debs from Termux's official repo.
+          # Those .debs have com.termux paths baked in. We need properties.sh
+          # to match so the ZIP structure is correct. NovaTerm's BootstrapInstaller
+          # patches com.termux → com.nvterm at runtime during extraction.
+          sed -i 's/TERMUX_APP__PACKAGE_NAME="com.nvterm"/TERMUX_APP__PACKAGE_NAME="com.termux"/' scripts/properties.sh
+
+      - name: Generate bootstrap
+        run: |
+          EXTRA="${{ github.event.inputs.extra_packages }}"
+          ADD_FLAG=""
+          if [ -n "$EXTRA" ]; then
+            ADD_FLAG="--add $EXTRA"
+          fi
+
+          ./scripts/generate-bootstraps.sh \
+            --architectures aarch64 \
+            $ADD_FLAG
+
+      - name: Verify bootstrap
+        run: |
+          ls -lh bootstrap-aarch64.zip
+          echo "=== Essential files ==="
+          for f in bin/bash bin/apt bin/dpkg; do
+            if unzip -l bootstrap-aarch64.zip "$f" 2>/dev/null | grep -q "$f"; then
+              echo "  OK: $f"
+            else
+              echo "  MISSING: $f"
+            fi
+          done
+          echo "=== Symlinks ==="
+          unzip -p bootstrap-aarch64.zip SYMLINKS.txt | grep -c "←" | xargs -I{} echo "  {} symlinks"
+          echo "=== Total ==="
+          unzip -l bootstrap-aarch64.zip | tail -1
+
+      - name: Calculate checksums
+        run: sha256sum bootstrap-aarch64.zip > checksums-sha256.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-aarch64
+          path: |
+            bootstrap-aarch64.zip
+            checksums-sha256.txt
+          retention-days: 90
+          compression-level: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="bootstrap-$(date '+%Y.%m.%d')-fast"
+          SIZE=$(du -sh bootstrap-aarch64.zip | cut -f1)
+          CHECKSUM=$(sha256sum bootstrap-aarch64.zip | cut -d' ' -f1)
+          FILES=$(unzip -l bootstrap-aarch64.zip | tail -1 | awk '{print $2}')
+
+          gh release create "$TAG" \
+            --title "Bootstrap aarch64 ($TAG)" \
+            --notes "## NovaTerm Bootstrap (pre-built)
+
+          Generated from Termux apt repo using \`generate-bootstraps.sh\`.
+          **Runtime patching**: \`com.termux\` → \`com.nvterm\` by BootstrapInstaller.
+
+          | Property | Value |
+          |----------|-------|
+          | Size | ${SIZE} |
+          | Files | ${FILES} |
+          | SHA-256 | \`${CHECKSUM}\` |
+          | Extra | ${{ github.event.inputs.extra_packages || 'default' }} |
+          " \
+            bootstrap-aarch64.zip checksums-sha256.txt
