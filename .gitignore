@@ -43,3 +43,10 @@ scripts/apt-packages-list-*.txt
 
 # Generated on GitHub Actions CI when building kernel modules
 /scripts/*.ko.zst
+
+# Node
+node_modules/
+
+# Environment
+.env
+.env.*
