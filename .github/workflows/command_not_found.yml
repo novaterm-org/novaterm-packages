@@ -31,3 +31,4 @@ jobs:
           git add .
           git commit -m "rebuild(main/command-not-found): to update database"
           git push
+
