@@ -24,6 +24,17 @@ on:
         required: false
         default: "stable"
         type: string
+  workflow_call:
+    inputs:
+      artifact_run_id:
+        description: "Run ID of build-packages workflow to fetch artifacts from (leave empty for latest)"
+        required: false
+        type: string
+      distribution:
+        description: "APT distribution name"
+        required: false
+        default: "stable"
+        type: string
   workflow_run:
     workflows: ["Build Packages"]
     types:
