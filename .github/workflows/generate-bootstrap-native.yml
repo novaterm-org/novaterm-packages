@@ -1,0 +1,113 @@
+name: Generate Bootstrap (Native)
+
+# Builds a native bootstrap ZIP from source using novaterm-packages.
+# All packages have com.nvterm paths baked in — NO runtime patching needed.
+#
+# This is the long-term replacement for the "fast" bootstrap that downloads
+# pre-built Termux .debs and patches them at install time.
+#
+# Takes ~2-5 hours but produces a fully independent bootstrap.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: "Additional packages (comma-separated)"
+        required: false
+        default: "openssh,git"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    name: Generate Native Bootstrap (aarch64)
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h /
+
+      - name: Build bootstrap from source
+        run: |
+          EXTRA="${{ github.event.inputs.extra_packages }}"
+          ADD_FLAG=""
+          if [ -n "$EXTRA" ]; then
+            ADD_FLAG="--add $EXTRA"
+          fi
+
+          # properties.sh already has com.nvterm — this is our native fork.
+          # No sed hack needed unlike the "fast" workflow.
+          ./scripts/run-docker.sh ./scripts/generate-bootstraps.sh \
+            --architectures aarch64 \
+            $ADD_FLAG
+
+      - name: Verify bootstrap
+        run: |
+          ls -lh bootstrap-aarch64.zip
+          echo "=== Essential files ==="
+          for f in bin/bash bin/apt bin/dpkg; do
+            if unzip -l bootstrap-aarch64.zip "$f" 2>/dev/null | grep -q "$f"; then
+              echo "  OK: $f"
+            else
+              echo "  MISSING: $f"
+            fi
+          done
+          echo "=== Native paths check ==="
+          # Verify com.nvterm is in the ZIP (not com.termux)
+          if unzip -l bootstrap-aarch64.zip | grep -q "com.nvterm"; then
+            echo "  OK: com.nvterm paths found"
+          else
+            echo "  WARNING: No com.nvterm paths — may need investigation"
+          fi
+          echo "=== Symlinks ==="
+          unzip -p bootstrap-aarch64.zip SYMLINKS.txt | grep -c "←" | xargs -I{} echo "  {} symlinks"
+          echo "=== Total ==="
+          unzip -l bootstrap-aarch64.zip | tail -1
+
+      - name: Calculate checksums
+        run: sha256sum bootstrap-aarch64.zip > checksums-sha256.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-aarch64-native
+          path: |
+            bootstrap-aarch64.zip
+            checksums-sha256.txt
+          retention-days: 90
+          compression-level: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="bootstrap-$(date '+%Y.%m.%d')-native"
+          SIZE=$(du -sh bootstrap-aarch64.zip | cut -f1)
+          CHECKSUM=$(sha256sum bootstrap-aarch64.zip | cut -d' ' -f1)
+          FILES=$(unzip -l bootstrap-aarch64.zip | tail -1 | awk '{print $2}')
+
+          gh release create "$TAG" \
+            --title "Bootstrap aarch64 Native ($TAG)" \
+            --notes "## NovaTerm Bootstrap (native build)
+
+          Built from source using \`novaterm-packages\` fork.
+          **Native**: \`com.nvterm\` paths baked in, no runtime patching needed.
+
+          | Property | Value |
+          |----------|-------|
+          | Size | ${SIZE} |
+          | Files | ${FILES} |
+          | SHA-256 | \`${CHECKSUM}\` |
+          | Extra | ${{ github.event.inputs.extra_packages || 'default' }} |
+          " \
+            bootstrap-aarch64.zip checksums-sha256.txt
