@@ -1,0 +1,44 @@
+name: Build & Publish Native Packages
+
+# Builds core NovaTerm packages from source using novaterm-packages
+# (which compiles with com.nvterm paths baked in — no runtime patching needed).
+# Then publishes to the APT repository.
+#
+# This is the path to independence: native packages replace Termux packages
+# that currently require runtime binary patching.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Space-separated package names to build"
+        required: false
+        default: "bash coreutils dpkg apt"
+        type: string
+  schedule:
+    - cron: "0 3 * * 0"  # Every Sunday 3AM UTC
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: native-packages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Native Packages (aarch64)
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      packages: ${{ inputs.packages || 'bash coreutils dpkg apt' }}
+      architectures: "aarch64"
+
+  publish:
+    name: Publish to APT Repository
+    needs: build
+    if: success()
+    uses: ./.github/workflows/publish-repo.yml
+    with:
+      distribution: "stable"
