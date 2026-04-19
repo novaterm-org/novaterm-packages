@@ -155,8 +155,13 @@ jobs:
           ARCH="${{ matrix.arch }}"
 
           # Move built .debs (including subpackages) to debs/
+          # Rename files with colons (epoch versions) since GitHub Actions
+          # upload-artifact rejects colons in paths.
           if [ -d "output" ]; then
-            find output -name "*.deb" -type f -exec mv {} debs/ \;
+            find output -name "*.deb" -type f | while read -r deb; do
+              safe_name=$(basename "$deb" | tr ':' '_')
+              cp "$deb" "debs/${safe_name}"
+            done
           fi
 
           DEB_COUNT=$(find debs -name "*.deb" -type f | wc -l)
