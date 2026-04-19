@@ -37,7 +37,10 @@ jobs:
           sudo apt-get clean
           df -h /
 
-      - name: Build bootstrap from source
+      - name: Install dependencies
+        run: sudo apt-get install -y jq
+
+      - name: Generate native bootstrap
         run: |
           EXTRA="${{ github.event.inputs.extra_packages }}"
           ADD_FLAG=""
@@ -47,7 +50,9 @@ jobs:
 
           # properties.sh already has com.nvterm — this is our native fork.
           # No sed hack needed unlike the "fast" workflow.
-          ./scripts/run-docker.sh ./scripts/generate-bootstraps.sh \
+          # Run directly (no Docker) — generate-bootstraps.sh only downloads
+          # and repackages .deb files, it doesn't compile from source.
+          ./scripts/generate-bootstraps.sh \
             --architectures aarch64 \
             $ADD_FLAG
 
