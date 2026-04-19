@@ -1,12 +1,14 @@
 name: Generate Bootstrap (Native)
 
-# Builds a native bootstrap ZIP from source using novaterm-packages.
-# All packages have com.nvterm paths baked in — NO runtime patching needed.
+# Generates a bootstrap ZIP using novaterm-packages.
+# Since the downloaded .deb packages still have com.termux paths baked in,
+# we temporarily set TERMUX_APP__PACKAGE_NAME to com.termux during generation
+# so the directory structure matches the package contents. NovaTerm's
+# BootstrapInstaller patches com.termux → com.nvterm at runtime.
 #
-# This is the long-term replacement for the "fast" bootstrap that downloads
-# pre-built Termux .debs and patches them at install time.
-#
-# Takes ~2-5 hours but produces a fully independent bootstrap.
+# The truly "native" bootstrap (with com.nvterm paths baked into .deb files
+# built from source) will be available once the native-packages workflow
+# produces enough packages to generate a complete bootstrap from them.
 
 on:
   workflow_dispatch:
@@ -25,22 +27,24 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 30
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
 
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get clean
-          df -h /
-
       - name: Install dependencies
         run: sudo apt-get install -y jq
 
-      - name: Generate native bootstrap
+      - name: Set package name for generate
+        run: |
+          # generate-bootstraps.sh downloads .debs from Termux's official repo.
+          # Those .debs have com.termux paths baked in. We need properties.sh
+          # to match so the ZIP structure is correct. NovaTerm's BootstrapInstaller
+          # patches com.termux → com.nvterm at runtime during extraction.
+          sed -i 's/TERMUX_APP__PACKAGE_NAME="com.nvterm"/TERMUX_APP__PACKAGE_NAME="com.termux"/' scripts/properties.sh
+
+      - name: Generate bootstrap
         run: |
           EXTRA="${{ github.event.inputs.extra_packages }}"
           ADD_FLAG=""
@@ -48,10 +52,6 @@ jobs:
             ADD_FLAG="--add $EXTRA"
           fi
 
-          # properties.sh already has com.nvterm — this is our native fork.
-          # No sed hack needed unlike the "fast" workflow.
-          # Run directly (no Docker) — generate-bootstraps.sh only downloads
-          # and repackages .deb files, it doesn't compile from source.
           ./scripts/generate-bootstraps.sh \
             --architectures aarch64 \
             $ADD_FLAG
@@ -67,13 +67,6 @@ jobs:
               echo "  MISSING: $f"
             fi
           done
-          echo "=== Native paths check ==="
-          # Verify com.nvterm is in the ZIP (not com.termux)
-          if unzip -l bootstrap-aarch64.zip | grep -q "com.nvterm"; then
-            echo "  OK: com.nvterm paths found"
-          else
-            echo "  WARNING: No com.nvterm paths — may need investigation"
-          fi
           echo "=== Symlinks ==="
           unzip -p bootstrap-aarch64.zip SYMLINKS.txt | grep -c "←" | xargs -I{} echo "  {} symlinks"
           echo "=== Total ==="
