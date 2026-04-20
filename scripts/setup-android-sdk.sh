@@ -71,7 +71,9 @@ yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" --licenses
 # The android platforms are used in the ecj and apksigner packages:
 yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" \
 		"platform-tools" \
+		"build-tools;30.0.3" \
 		"build-tools;${TERMUX_ANDROID_BUILD_TOOLS_VERSION}" \
 		"platforms;android-35" \
+		"platforms;android-33" \
 		"platforms;android-28" \
 		"platforms;android-24"
