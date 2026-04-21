@@ -69,3 +69,4 @@ jobs:
           for file in *.zip; do
             gh release upload ${{ steps.get_tag.outputs.tag_name }} "$file"
           done
+

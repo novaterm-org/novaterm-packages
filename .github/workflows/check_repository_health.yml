@@ -51,3 +51,4 @@ jobs:
               --json number | jq -r '.[] | .number'
           )
           gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "health-check" --assignee "thunder-coding"
+
