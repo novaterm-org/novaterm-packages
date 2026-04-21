@@ -162,8 +162,16 @@ jobs:
           # Mount ccache for faster rebuilds
           export TERMUX_DOCKER_RUN_EXTRA_ARGS="--volume $HOME/.ccache:/home/builder/.ccache"
 
+          # nvterm-* packages cannot use -I (download pre-built deps from Termux repo)
+          # because our app package name is com.nvterm but the repo serves com.termux.
+          # For those, build dependencies from source instead.
+          DOWNLOAD_FLAG="-I"
+          case "$PACKAGE" in
+            nvterm-*) DOWNLOAD_FLAG="" ;;
+          esac
+
           echo "Building ${PACKAGE} for ${ARCH}..."
-          ./scripts/run-docker.sh ./build-package.sh -I -C -a "$ARCH" "$PACKAGE"
+          ./scripts/run-docker.sh ./build-package.sh $DOWNLOAD_FLAG -C -a "$ARCH" "$PACKAGE"
 
       - name: Collect .deb files
         id: collect
