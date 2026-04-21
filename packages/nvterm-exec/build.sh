@@ -35,7 +35,7 @@ termux_step_strip_elf_symbols() {
 	termux_step_strip_elf_symbols__from_paths . \
 	\( \
 		\( -path "./bin/*" -o -path "./lib/*" -o -path "./libexec/*" \) -a \
-		\( ! -path "./libexec/installed-tests/nvterm-exec/*" \)
+		\( ! -path "./libexec/installed-tests/nvterm-exec/*" \) \
 	\)
 }
 
