@@ -136,24 +136,6 @@ jobs:
       - name: Pull Docker image
         run: docker pull ghcr.io/termux/package-builder:latest
 
-      - name: Install missing Android SDK components
-        run: |
-          # The Docker image may lack some SDK components required by
-          # packages like termux-exec that need build-tools;30.0.3
-          # and platforms;android-33 for Gradle-based builds.
-          docker exec termux-package-builder bash -c '
-            ANDROID_HOME=/home/builder/lib/android-sdk
-            SDK_MANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-            if [ ! -x "$SDK_MANAGER" ]; then
-              SDK_MANAGER=$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)
-            fi
-            if [ -x "$SDK_MANAGER" ]; then
-              yes | $SDK_MANAGER --sdk_root="$ANDROID_HOME" \
-                "build-tools;30.0.3" \
-                "platforms;android-33" || true
-            fi
-          ' || true
-
       - name: Build package
         run: |
           PACKAGE="${{ matrix.package }}"
