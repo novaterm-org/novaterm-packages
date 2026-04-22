@@ -191,7 +191,7 @@ jobs:
 
       - name: Upload .deb artifacts
         if: steps.collect.outputs.deb_count != '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debs-${{ matrix.package }}-${{ matrix.arch }}
           path: debs/
@@ -233,7 +233,7 @@ jobs:
           echo "**Total: ${TOTAL} .deb files built**" >> $GITHUB_STEP_SUMMARY
 
       - name: Merge all debs into single artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: all-debs
           path: all-debs/
